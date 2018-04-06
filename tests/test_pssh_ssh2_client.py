@@ -22,28 +22,28 @@
 
 from __future__ import print_function
 
-import unittest
-import pwd
 import logging
 import os
-import shutil
-import sys
-import string
-from socket import timeout as socket_timeout
-from sys import version_info
+import pwd
 import random
+import shutil
+import string
+import sys
 import time
-
+import unittest
+from sys import version_info
 
 import gevent
-from pssh.pssh2_client import ParallelSSHClient, logger as pssh_logger
-from pssh.exceptions import UnknownHostException, \
-    AuthenticationException, ConnectionErrorException, SessionError, \
-    HostArgumentException, SFTPError, SFTPIOError, Timeout
+from pssh.exceptions import (AuthenticationException, ConnectionErrorException,
+                             HostArgumentException, SessionError, SFTPError,
+                             SFTPIOError, Timeout, UnknownHostException)
+from pssh.pssh2_client import logger as pssh_logger
+from pssh.pssh2_client import ParallelSSHClient
 
+from .base_ssh2_test import PKEY_FILENAME, PUB_FILE
 from .embedded_server.embedded_server import make_socket
 from .embedded_server.openssh import OpenSSHServer
-from .base_ssh2_test import SSH2TestCase, PKEY_FILENAME, PUB_FILE
+
 # from pssh.utils import load_private_key
 # from pssh.agent import SSHAgent
 
@@ -81,7 +81,10 @@ class ParallelSSHClientTest(unittest.TestCase):
         del cls.server
 
     def setUp(self):
-        self.long_cmd = lambda lines: 'for (( i=0; i<%s; i+=1 )) do echo $i; sleep 1; done' % (lines,)
+        self.long_cmd = lambda lines: "echo -e {}; sleep {}".format(
+            "\\n" * lines, str(lines))
+        self.long_cmd = lambda lines: \
+            'for (( i=0; i<%s; i+=1 )) do echo $i; sleep 1; done' % (lines,)
 
     def make_random_port(self, host=None):
         host = self.host if not host else host
@@ -137,8 +140,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         self.assertTrue(len(output), len(self.client.cmds))
         _output = {}
         for i, host in enumerate([self.host]):
-            cmd = self.client.cmds[i]
-            self.client.get_output(cmd, _output)
+            cmd = self.client.cmds[i][1]
+            self.client.get_output(host, cmd, _output)
         self.assertTrue(len(_output) == len(output))
         for host in output:
             self.assertTrue(host in _output)
@@ -195,10 +198,10 @@ class ParallelSSHClientTest(unittest.TestCase):
 
     def test_pssh_client_run_command_get_output_explicit(self):
         out = self.client.run_command(self.cmd)
-        cmds = [cmd for host in out for cmd in [out[host]['cmd']]]
+        cmds = [(host, cmd) for host in out for cmd in [out[host]['cmd']]]
         output = {}
-        for cmd in cmds:
-            self.client.get_output(cmd, output)
+        for host, cmd in cmds:
+            self.client.get_output(host, cmd, output)
         expected_exit_code = 0
         expected_stdout = [self.resp]
         expected_stderr = []
@@ -210,11 +213,11 @@ class ParallelSSHClientTest(unittest.TestCase):
                          (exit_code,
                           expected_exit_code,))
         self.assertEqual(expected_stdout, stdout,
-                         msg="Got unexpected stdout - %s, expected %s" % 
+                         msg="Got unexpected stdout - %s, expected %s" %
                          (stdout,
                           expected_stdout,))
         self.assertEqual(expected_stderr, stderr,
-                         msg="Got unexpected stderr - %s, expected %s" % 
+                         msg="Got unexpected stderr - %s, expected %s" %
                          (stderr,
                           expected_stderr,))
 
@@ -248,11 +251,14 @@ class ParallelSSHClientTest(unittest.TestCase):
         client.join(output, consume_output=True)
         self.assertTrue(client.finished(output))
         self.assertTrue(hosts[0] in output,
-                        msg="Successful host does not exist in output - output is %s" % (output,))
+                        msg="Successful host does not exist in output - "
+                        "output is %s" % (output,))
         self.assertTrue(hosts[1] in output,
-                        msg="Failed host does not exist in output - output is %s" % (output,))
+                        msg="Failed host does not exist in output - output is "
+                        "%s" % (output,))
         self.assertTrue('exception' in output[hosts[1]],
-                        msg="Failed host %s has no exception in output - %s" % (hosts[1], output,))
+                        msg="Failed host %s has no exception in output - %s"
+                        % (hosts[1], output,))
         self.assertTrue(output[hosts[1]].exception is not None)
         try:
             raise output[hosts[1]]['exception']
@@ -327,7 +333,7 @@ class ParallelSSHClientTest(unittest.TestCase):
         client = ParallelSSHClient([self.host], port=port, num_retries=1)
         cmds = client.copy_file("test", "test")
         client.pool.join()
-        for cmd in cmds:
+        for _host, cmd in cmds:
             self.assertRaises(ConnectionErrorException, cmd.get)
 
     def test_pssh_copy_file(self):
@@ -344,7 +350,7 @@ class ParallelSSHClientTest(unittest.TestCase):
         test_file.writelines([test_file_data + os.linesep])
         test_file.close()
         cmds = client.copy_file(local_filename, remote_filename)
-        cmds[0].get()
+        cmds[0][1].get()
         try:
             self.assertTrue(os.path.isdir(remote_test_dir_abspath))
             self.assertTrue(os.path.isfile(remote_file_abspath))
@@ -357,7 +363,7 @@ class ParallelSSHClientTest(unittest.TestCase):
             shutil.rmtree(remote_test_dir_abspath)
         # No directory
         remote_file_abspath = os.path.expanduser('~/' + remote_filepath)
-        cmds = client.copy_file(local_filename, remote_filepath)
+        _hosts, cmds = zip(*(client.copy_file(local_filename, remote_filepath)))
         try:
             gevent.joinall(cmds, raise_error=True)
         except Exception:
@@ -398,8 +404,9 @@ class ParallelSSHClientTest(unittest.TestCase):
 
         client = ParallelSSHClient(hosts, port=self.port, pkey=self.user_key,
                                    num_retries=2)
-        greenlets = client.copy_file('%(local_file)s', '%(remote_file)s',
-                                     copy_args=copy_args)
+        _hosts, greenlets = zip(*(
+            client.copy_file('%(local_file)s', '%(remote_file)s',
+                             copy_args=copy_args)))
         gevent.joinall(greenlets)
 
         self.assertRaises(HostArgumentException, client.copy_file,
@@ -450,13 +457,16 @@ class ParallelSSHClientTest(unittest.TestCase):
             os.makedirs(local_file_path_dir)
             local_file_path = os.path.join(local_file_path_dir, 'foo' + str(i))
             remote_file_path = os.path.join(
-                remote_test_path, 'sub_dir1', 'sub_dir2', 'dir_foo' + str(i), 'foo' + str(i))
+                remote_test_path,
+                'sub_dir1', 'sub_dir2', 'dir_foo' + str(i), 'foo' + str(i))
             remote_file_paths.append(
                 os.sep.join((os.path.dirname(__file__), remote_file_path)))
             test_file = open(local_file_path, 'w')
             test_file.write(test_file_data)
             test_file.close()
-        cmds = client.copy_file(local_test_path, remote_test_path_rel, recurse=True)
+
+        _hosts, cmds = zip(*(client.copy_file(
+            local_test_path, remote_test_path_rel, recurse=True)))
         try:
             gevent.joinall(cmds, raise_error=True)
             for path in remote_file_paths:
@@ -486,13 +496,15 @@ class ParallelSSHClientTest(unittest.TestCase):
             os.makedirs(local_file_path_dir)
             local_file_path = os.path.join(local_file_path_dir, 'foo' + str(i))
             remote_file_path = os.path.join(
-                remote_test_path, 'sub_dir1', 'sub_dir2', 'dir_foo' + str(i), 'foo' + str(i))
+                remote_test_path,
+                'sub_dir1', 'sub_dir2', 'dir_foo' + str(i), 'foo' + str(i))
             remote_file_paths.append(
                 os.sep.join((os.path.dirname(__file__), remote_file_path)))
             test_file = open(local_file_path, 'w')
             test_file.write(test_file_data)
             test_file.close()
-        cmds = client.copy_file(local_test_path, remote_test_path_abs, recurse=True)
+        _hosts, cmds = zip(*(client.copy_file(
+            local_test_path, remote_test_path_abs, recurse=True)))
         try:
             gevent.joinall(cmds, raise_error=True)
             for path in remote_file_paths:
@@ -503,7 +515,6 @@ class ParallelSSHClientTest(unittest.TestCase):
 
     def test_pssh_client_copy_file_failure(self):
         """Test failure scenarios of file copy"""
-        test_file_data = 'test'
         local_test_path = 'directory_test'
         remote_test_path = 'directory_test_copied'
         dir_name = os.path.dirname(__file__)
@@ -523,7 +534,6 @@ class ParallelSSHClientTest(unittest.TestCase):
         os.mkdir(local_test_path)
         os.mkdir(remote_test_path_abs)
         local_file_path = os.path.join(local_test_path, 'test_file')
-        remote_file_path = os.path.join(remote_test_path, 'test_file')
         remote_test_path_abs = os.sep.join((dir_name, remote_test_path))
         test_file = open(local_file_path, 'w')
         test_file.write('testing\n')
@@ -531,7 +541,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         # Permission errors on writing into dir
         mask = int('0111') if sys.version_info <= (2,) else 0o111
         os.chmod(remote_test_path_abs, mask)
-        cmds = self.client.copy_file(local_test_path, remote_test_path_abs, recurse=True)
+        _hosts, cmds = zip(*(self.client.copy_file(
+            local_test_path, remote_test_path_abs, recurse=True)))
         try:
             gevent.joinall(cmds, raise_error=True)
             raise Exception("Expected SFTPError exception")
@@ -540,9 +551,9 @@ class ParallelSSHClientTest(unittest.TestCase):
         self.assertFalse(os.path.isfile(remote_test_path_abs))
         # Create directory tree failure test
         local_file_path = os.path.join(local_test_path, 'test_file')
-        remote_file_path = os.path.join(remote_test_path, 'test_dir', 'test_file')
         remote_test_path_abs = os.sep.join((dir_name, remote_test_path))
-        cmds = self.client.copy_file(local_file_path, remote_test_path_abs, recurse=True)
+        _hosts, cmds = zip(*(self.client.copy_file(
+            local_file_path, remote_test_path_abs, recurse=True)))
         try:
             gevent.joinall(cmds, raise_error=True)
             raise Exception("Expected SFTPError exception on creating remote "
@@ -558,19 +569,21 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_pssh_copy_remote_file_failure(self):
         cmds = self.client.copy_remote_file(
             'fakey fakey fake fake', 'equally fake')
-        self.assertRaises(SFTPIOError, cmds[0].get)
+        self.assertRaises(SFTPIOError, cmds[0][1].get)
 
     def test_pssh_copy_remote_file(self):
         """Test parallel copy file to local host"""
         test_file_data = 'test'
         dir_name = os.path.dirname(__file__)
-        local_test_path = os.sep.join((dir_name, 'directory_test_local_remote_copied'))
+        local_test_path = os.sep.join(
+            (dir_name, 'directory_test_local_remote_copied'))
         remote_test_path = 'directory_test_remote_copy'
         remote_test_path_abs = os.sep.join((dir_name, remote_test_path))
         remote_test_path_rel = os.sep.join(
             (dir_name.replace(os.path.expanduser('~') + os.sep, ''),
              remote_test_path))
         local_copied_dir = '_'.join([local_test_path, self.host])
+        logging.warning("local_copied_dir: " + local_copied_dir)
         new_local_copied_dir = '.'.join([local_test_path, self.host])
         for path in [local_test_path, remote_test_path_abs, local_copied_dir,
                      new_local_copied_dir]:
@@ -588,30 +601,36 @@ class ParallelSSHClientTest(unittest.TestCase):
             remote_file_path_dir = os.path.join(
                 remote_test_path_abs, 'sub_dir', 'dir_foo' + str(i))
             os.makedirs(remote_file_path_dir)
-            remote_file_path = os.path.join(remote_file_path_dir, 'foo' + str(i))
+            remote_file_path = os.path.join(
+                remote_file_path_dir, 'foo' + str(i))
             local_file_path = os.path.join(
                 local_copied_dir, 'sub_dir', 'dir_foo' + str(i), 'foo' + str(i))
             local_file_paths.append(local_file_path)
             test_file = open(remote_file_path, 'w')
             test_file.write(test_file_data)
             test_file.close()
-        cmds = self.client.copy_remote_file(remote_test_path_abs, local_test_path)
+        _hosts, cmds = zip(*(self.client.copy_remote_file(
+            remote_test_path_abs, local_test_path)))
         self.assertRaises(ValueError, gevent.joinall, cmds, raise_error=True)
-        cmds = self.client.copy_remote_file(remote_test_path_abs, local_test_path,
-                                            recurse=True)
+        _hosts, cmds = zip(*(self.client.copy_remote_file(
+            remote_test_path_abs, local_test_path, recurse=True)))
         gevent.joinall(cmds, raise_error=True)
         try:
+            logging.warning("local_copied_dir: " + local_copied_dir)
             self.assertTrue(os.path.isdir(local_copied_dir))
+            logging.warning("local_copied_dir is a valid dir")
             for path in local_file_paths:
+                logging.warning("checking path validity for " + path)
                 self.assertTrue(os.path.isfile(path))
         except Exception:
             shutil.rmtree(remote_test_path_abs)
         finally:
+            logging.warning("local_copied_dir: " + local_copied_dir)
             shutil.rmtree(local_copied_dir)
 
         # Relative path
-        cmds = self.client.copy_remote_file(remote_test_path_rel, local_test_path,
-                                            recurse=True)
+        _hosts, cmds = zip(*(self.client.copy_remote_file(
+            remote_test_path_rel, local_test_path, recurse=True)))
         gevent.joinall(cmds, raise_error=True)
         try:
             self.assertTrue(os.path.isdir(local_copied_dir))
@@ -620,11 +639,13 @@ class ParallelSSHClientTest(unittest.TestCase):
         except Exception:
             shutil.rmtree(remote_test_path_abs)
         finally:
+            logging.warning("local_copied_dir: " + local_copied_dir)
             shutil.rmtree(local_copied_dir)
 
         # Different suffix
-        cmds = self.client.copy_remote_file(remote_test_path_abs, local_test_path,
-                                            suffix_separator='.', recurse=True)
+        _hosts, cmds = zip(*(self.client.copy_remote_file(
+            remote_test_path_abs, local_test_path,
+            suffix_separator='.', recurse=True)))
         gevent.joinall(cmds, raise_error=True)
         new_local_copied_dir = '.'.join([local_test_path, self.host])
         try:
@@ -665,8 +686,9 @@ class ParallelSSHClientTest(unittest.TestCase):
 
         client = ParallelSSHClient(hosts, port=self.port, pkey=self.user_key,
                                    num_retries=2)
-        greenlets = client.copy_remote_file('%(remote_file)s', '%(local_file)s',
-                                            copy_args=copy_args)
+        _hosts, greenlets = zip(*(
+            client.copy_remote_file('%(remote_file)s', '%(local_file)s',
+                                    copy_args=copy_args)))
         gevent.joinall(greenlets)
 
         self.assertRaises(HostArgumentException, client.copy_remote_file,
@@ -729,8 +751,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         stdout = [list(output[k].stdout) for k in output]
         expected_stdout = [[self.resp] for _ in hosts]
         self.assertEqual(len(hosts), len(output),
-                         msg="Did not get output from all hosts. Got output for " \
-                         "%s/%s hosts" % (len(output), len(hosts),))
+                         msg="Did not get output from all hosts. Got output "
+                         "for %s/%s hosts" % (len(output), len(hosts),))
         self.assertEqual(expected_stdout, stdout,
                          msg="Did not get expected output from all hosts. \
                          Got %s - expected %s" % (stdout, expected_stdout,))
@@ -740,7 +762,7 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_pssh_hosts_iterator_hosts_modification(self):
         """Test using iterator as host list and modifying host list in place"""
         host2, host3 = '127.0.0.2', '127.0.0.3'
-        server2 = OpenSSHServer(listen_ip=host2) 
+        server2 = OpenSSHServer(listen_ip=host2)
         server3 = OpenSSHServer(listen_ip=host3)
         server2.start_server()
         server3.start_server()
@@ -751,11 +773,9 @@ class ParallelSSHClientTest(unittest.TestCase):
                                    pool_size=1,
                                    )
         output = client.run_command(self.cmd)
-        stdout = [list(output[k]['stdout']) for k in output]
-        expected_stdout = [[self.resp], [self.resp]]
         self.assertEqual(len(hosts), len(output),
-                         msg="Did not get output from all hosts. Got output for " \
-                         "%s/%s hosts" % (len(output), len(hosts),))
+                         msg="Did not get output from all hosts. Got output "
+                         "for %s/%s hosts" % (len(output), len(hosts),))
         # Run again without re-assigning host list, should do nothing
         output = client.run_command(self.cmd)
         self.assertFalse(hosts[0] in output,
@@ -767,8 +787,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         client.hosts = iter(hosts)
         output = client.run_command(self.cmd)
         self.assertEqual(len(hosts), len(output),
-                         msg="Did not get output from all hosts. Got output for " \
-                         "%s/%s hosts" % (len(output), len(hosts),))
+                         msg="Did not get output from all hosts. Got output "
+                         "for %s/%s hosts" % (len(output), len(hosts),))
         self.assertTrue(hosts[1] in output,
                         msg="Did not get output for new host %s" % (hosts[1],))
         server2.stop()
@@ -795,7 +815,7 @@ class ParallelSSHClientTest(unittest.TestCase):
 #             stdout = list(output[self.host]['stdout'])
 #             expected_stdout = [self.fake_resp]
 #             self.assertEqual(expected_stdout, stdout,
-#                              msg="Got unexpected stdout - %s, expected %s" % 
+#                              msg="Got unexpected stdout - %s, expected %s" %
 #                              (stdout,
 #                               expected_stdout,))
 #         finally:
@@ -883,7 +903,7 @@ class ParallelSSHClientTest(unittest.TestCase):
         """Test bash variables work correctly"""
         command = """for i in 1 2 3; do echo $i; done"""
         output = list(self.client.run_command(command)[self.host]['stdout'])
-        expected = ['1','2','3']
+        expected = ['1', '2', '3']
         self.assertListEqual(output, expected)
 
     def test_identical_host_output(self):
@@ -897,11 +917,12 @@ class ParallelSSHClientTest(unittest.TestCase):
         output = client.run_command(self.cmd, stop_on_errors=False)
         client.join(output)
         self.assertEqual(len(hosts), len(output.keys()),
-                         msg="Host list contains %s identical hosts, only got output for %s" % (
-                             len(hosts), len(output.keys())))
+                         msg="Host list contains %s identical hosts, only got "
+                         "output for %s" % (len(hosts), len(output.keys())))
 
     def test_connection_error_exception(self):
-        """Test that we get connection error exception in output with correct arguments"""
+        """Test that we get connection error exception in output with correct \
+        arguments"""
         # Make port with no server listening on it on separate ip
         host = '127.0.0.3'
         port = self.make_random_port(host=host)
@@ -912,22 +933,23 @@ class ParallelSSHClientTest(unittest.TestCase):
         output = client.run_command(self.cmd, stop_on_errors=False)
         client.join(output)
         self.assertTrue('exception' in output[host],
-                        msg="Got no exception for host %s - expected connection error" % (
-                            host,))
+                        msg="Got no exception for host %s - expected "
+                        "connection error" % (host,))
         try:
             raise output[host]['exception']
         except ConnectionErrorException as ex:
             self.assertEqual(ex.args[1], host,
-                             msg="Exception host argument is %s, should be %s" % (
-                                 ex.args[1], host,))
+                             msg="Exception host argument is %s, should be %s"
+                             % (ex.args[1], host,))
             self.assertEqual(ex.args[2], port,
-                             msg="Exception port argument is %s, should be %s" % (
-                                 ex.args[2], port,))
+                             msg="Exception port argument is %s, should be %s"
+                             % (ex.args[2], port,))
         else:
             raise Exception("Expected ConnectionErrorException")
 
     def test_authentication_exception(self):
-        """Test that we get authentication exception in output with correct arguments"""
+        """Test that we get authentication exception in output with correct \
+        arguments"""
         # server, port = start_server_from_ip(self.host, fail_auth=True)
         hosts = [self.host]
         client = ParallelSSHClient(hosts, port=self.port,
@@ -935,17 +957,17 @@ class ParallelSSHClientTest(unittest.TestCase):
                                    num_retries=1)
         output = client.run_command(self.cmd, stop_on_errors=False)
         self.assertTrue('exception' in output[self.host],
-                        msg="Got no exception for host %s - expected connection error" % (
-                            self.host,))
+                        msg="Got no exception for host %s - expected "
+                        "connection error" % (self.host,))
         try:
             raise output[self.host]['exception']
         except AuthenticationException as ex:
             self.assertEqual(ex.args[1], self.host,
-                             msg="Exception host argument is %s, should be %s" % (
-                                 ex.args[1], self.host,))
+                             msg="Exception host argument is %s, should be %s"
+                             % (ex.args[1], self.host,))
             self.assertEqual(ex.args[2], self.port,
-                             msg="Exception port argument is %s, should be %s" % (
-                                 ex.args[2], self.port,))
+                             msg="Exception port argument is %s, should be %s"
+                             % (ex.args[2], self.port,))
         else:
             raise Exception("Expected AuthenticationException")
 
@@ -954,11 +976,12 @@ class ParallelSSHClientTest(unittest.TestCase):
         output = self.client.run_command("echo 'me' 'and me'")
         stdout = list(output[self.host].stdout)
         expected = 'me and me'
-        self.assertTrue(len(stdout)==1,
-                        msg="Got incorrect number of lines in output - %s" % (stdout,))
+        self.assertTrue(len(stdout) == 1,
+                        msg="Got incorrect number of lines in output - %s"
+                        % (stdout,))
         self.assertTrue(output[self.host]['exit_code'] == 0,
-                        msg="Error executing cmd with multiple single quotes - %s" % (
-                            stdout,))
+                        msg="Error executing cmd with multiple single quotes "
+                        "- %s" % (stdout,))
         self.assertEqual(expected, stdout[0],
                          msg="Got unexpected output. Expected %s, got %s" % (
                              expected, stdout[0],))
@@ -968,8 +991,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         output = self.client.run_command("out=`ls` && echo $out")
         self.client.join(output)
         self.assertTrue(output[self.host]['exit_code'] == 0,
-                        msg="Error executing cmd with backtics - error code %s" % (
-                            output[self.host]['exit_code'],))
+                        msg="Error executing cmd with backtics - error code %s"
+                        % (output[self.host]['exit_code'],))
 
     def test_multiple_shell_commands(self):
         """Test running multiple shell commands in one go"""
@@ -977,8 +1000,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         stdout = list(output[self.host]['stdout'])
         expected = ["me", "and", "me"]
         self.assertTrue(output[self.host]['exit_code'] == 0,
-                        msg="Error executing multiple shell cmds - error code %s" % (
-                            output[self.host]['exit_code'],))
+                        msg="Error executing multiple shell cmds - error code "
+                        "%s" % (output[self.host]['exit_code'],))
         self.assertEqual(expected, stdout,
                          msg="Got unexpected output. Expected %s, got %s" % (
                              expected, stdout,))
@@ -989,8 +1012,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         stdout = list(output[self.host]['stdout'])
         expected = ['--flags="this"']
         self.assertTrue(output[self.host]['exit_code'] == 0,
-                        msg="Error executing multiple shell cmds - error code %s" % (
-                            output[self.host]['exit_code'],))
+                        msg="Error executing multiple shell cmds - error code "
+                        "%s" % (output[self.host]['exit_code'],))
         self.assertEqual(expected, stdout,
                          msg="Got unexpected output. Expected %s, got %s" % (
                              expected, stdout,))
@@ -998,8 +1021,8 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_host_config(self):
         """Test per-host configuration functionality of ParallelSSHClient"""
         hosts = [('127.0.0.%01d' % n, self.make_random_port())
-                 for n in range(1,3)]
-        host_config = dict.fromkeys([h for h,_ in hosts])
+                 for n in range(1, 3)]
+        host_config = dict.fromkeys([h for h, _ in hosts])
         servers = []
         password = 'overriden_pass'
         fake_key = 'FAKE KEY'
@@ -1157,8 +1180,8 @@ class ParallelSSHClientTest(unittest.TestCase):
         output = self.client.run_command(cmd)
         stdout = list(output[self.host].stdout)
         self.assertEqual(expected, stdout,
-                         msg="Got unexpected unicode output %s - expected %s" % (
-                             stdout, expected,))
+                         msg="Got unexpected unicode output %s - expected %s"
+                         % (stdout, expected,))
         output = self.client.run_command(cmd, encoding='utf-16')
         _stdout = list(output[self.host].stdout)
         self.assertEqual([_utf16], _stdout)
@@ -1178,7 +1201,6 @@ class ParallelSSHClientTest(unittest.TestCase):
         stdout = list(output[self.host].stdout)
         stderr = list(output[self.host].stderr)
         exit_code = output[self.host].exit_code
-        expected_stdout = []
         # With a PTY, stdout and stderr are combined into stdout
         self.assertEqual(expected_stderr, stdout)
         self.assertEqual([], stderr)
@@ -1187,12 +1209,7 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_output_attributes(self):
         output = self.client.run_command(self.cmd)
         expected_exit_code = 0
-        expected_stdout = [self.resp]
-        expected_stderr = []
         self.client.join(output)
-        exit_code = output[self.host]['exit_code']
-        stdout = list(output[self.host]['stdout'])
-        stderr = list(output[self.host]['stderr'])
         host_output = output[self.host]
         self.assertEqual(expected_exit_code, host_output.exit_code)
         self.assertEqual(expected_exit_code, host_output['exit_code'])
@@ -1255,7 +1272,8 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_retries(self):
         client = ParallelSSHClient(['127.0.0.100'], port=self.port,
                                    num_retries=2, retry_delay=1)
-        self.assertRaises(ConnectionErrorException, client.run_command, self.cmd)
+        self.assertRaises(
+            ConnectionErrorException, client.run_command, self.cmd)
         host = ''.join([random.choice(string.ascii_letters) for n in range(8)])
         client.hosts = [host]
         self.assertRaises(UnknownHostException, client.run_command, self.cmd)
@@ -1272,7 +1290,8 @@ class ParallelSSHClientTest(unittest.TestCase):
                                    pkey=self.user_key)
         client.join(client.run_command(self.cmd))
         client.host_clients[self.host].session.disconnect()
-        self.assertRaises(SessionError, client.host_clients[self.host].open_session)
+        self.assertRaises(
+            SessionError, client.host_clients[self.host].open_session)
 
     def test_host_no_client(self):
         output = {'blah': None}
@@ -1305,7 +1324,8 @@ class ParallelSSHClientTest(unittest.TestCase):
     def test_read_timeout(self):
         client = ParallelSSHClient([self.host], port=self.port,
                                    pkey=self.user_key)
-        output = client.run_command('sleep 2; echo me; echo me; echo me', timeout=1)
+        output = client.run_command(
+            'sleep 2; echo me; echo me; echo me', timeout=1)
         for host, host_out in output.items():
             self.assertRaises(Timeout, list, host_out.stdout)
         self.assertFalse(output[self.host].channel.eof())
