@@ -63,11 +63,10 @@ class BaseParallelSSHClient(object):
         self.retry_delay = retry_delay
         self.cmds = None
 
-    def run_command(self, command, user=None, stop_on_errors=True,
-                    host_args=None, use_pty=False, shell=None,
-                    encoding='utf-8',
+    def run_command(self, command, user=None, return_outputs=True,
+                    stop_on_errors=True, host_args=None, use_pty=False,
+                    shell=None, encoding='utf-8',
                     *args, **kwargs):
-        output = {}
         if host_args:
             try:
                 cmds = [self.pool.spawn(self._run_command, host,
@@ -86,20 +85,21 @@ class BaseParallelSSHClient(object):
                 user=user, encoding=encoding, use_pty=use_pty, shell=shell,
                 *args, **kwargs)
                     for host in self.hosts]
-        for cmd in cmds:
-            try:
-                self.get_output(cmd, output)
-            except Exception:
-                if stop_on_errors:
-                    raise
+        if return_outputs:
+            ret = self.get_last_output(cmds, stop_on_errors=stop_on_errors)
+        else:
+            ret = cmds
         self.cmds = cmds
-        return output
+        return ret
 
-    def get_last_output(self, cmds=None):
+    def get_last_output(self, cmds=None, stop_on_errors=True):
         """Get output for last commands executed by ``run_command``
 
         :param cmds: Commands to get output for. Defaults to ``client.cmds``
         :type cmds: list(:py:class:`gevent.Greenlet`)
+        :param stop_on_errors: Whether or not to propagate exceptions thrown by
+          the commands. Defaults to ``true``
+        :type stop_on_errors: bool
 
         :rtype: dict
         """
@@ -107,8 +107,12 @@ class BaseParallelSSHClient(object):
         if cmds is None:
             return
         output = {}
-        for cmd in self.cmds:
-            self.get_output(cmd, output)
+        for cmd in cmds:
+            try:
+                self.get_output(cmd, output)
+            except Exception:
+                if stop_on_errors:
+                    raise
         return output
 
     def _get_host_config_values(self, host):

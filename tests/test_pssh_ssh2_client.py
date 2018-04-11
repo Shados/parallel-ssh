@@ -1245,6 +1245,14 @@ class ParallelSSHClientTest(unittest.TestCase):
         expected = ['1','2','3']
         self.assertListEqual(output, expected)
 
+    def test_run_command_returning_greenlets(self):
+        cmds = self.client.run_command(self.cmd, return_outputs=False)
+        self.assertTrue(isinstance(cmds[0], gevent.Greenlet))
+        outputs = self.client.get_last_output()
+        self.assertTrue(self.host in outputs)
+        self.assertTrue(outputs[self.host].channel is not None)
+        pass
+
     def test_conn_failure(self):
         """Test connection error failure case - ConnectionErrorException"""
         client = ParallelSSHClient(['127.0.0.100'], port=self.port,

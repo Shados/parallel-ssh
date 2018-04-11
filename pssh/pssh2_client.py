@@ -102,9 +102,9 @@ class ParallelSSHClient(BaseParallelSSHClient):
         self.proxy_password = proxy_password
         self._tunnels = {}
 
-    def run_command(self, command, sudo=False, user=None, stop_on_errors=True,
-                    use_pty=False, host_args=None, shell=None,
-                    encoding='utf-8', timeout=None):
+    def run_command(self, command, sudo=False, user=None, return_outputs=True,
+                    stop_on_errors=True, use_pty=False, host_args=None,
+                    shell=None, encoding='utf-8', timeout=None):
         """Run command on all hosts in parallel, honoring self.pool_size,
         and return output dictionary.
 
@@ -177,9 +177,10 @@ class ParallelSSHClient(BaseParallelSSHClient):
           to proxy if a proxy host has been set.
         """
         return BaseParallelSSHClient.run_command(
-            self, command, stop_on_errors=stop_on_errors, host_args=host_args,
-            user=user, shell=shell, sudo=sudo,
-            encoding=encoding, use_pty=use_pty, timeout=timeout)
+            self, command, return_outputs=return_outputs,
+            stop_on_errors=stop_on_errors, host_args=host_args, user=user,
+            shell=shell, sudo=sudo, encoding=encoding, use_pty=use_pty,
+            timeout=timeout)
 
     def _run_command(self, host, command, sudo=False, user=None,
                      shell=None, use_pty=False,

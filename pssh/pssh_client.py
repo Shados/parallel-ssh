@@ -122,9 +122,10 @@ class ParallelSSHClient(BaseParallelSSHClient):
         self.agent = agent
         self.channel_timeout = channel_timeout
 
-    def run_command(self, command, sudo=False, user=None, stop_on_errors=True,
-                    shell=None, use_shell=True, use_pty=True, host_args=None,
-                    encoding='utf-8', **paramiko_kwargs):
+    def run_command(self, command, sudo=False, user=None, return_outputs=True,
+                    stop_on_errors=True, shell=None, use_shell=True,
+                    use_pty=True, host_args=None, encoding='utf-8',
+                    **paramiko_kwargs):
         """Run command on all hosts in parallel, honoring self.pool_size,
         and return output buffers.
 
@@ -197,7 +198,6 @@ class ParallelSSHClient(BaseParallelSSHClient):
           string format
         :raises: :py:class:`KeyError` on no host argument key in arguments
           dict for cmd string format"""
-        output = {}
         if host_args:
             try:
                 cmds = [self.pool.spawn(self._run_command, host,
@@ -217,13 +217,12 @@ class ParallelSSHClient(BaseParallelSSHClient):
                 use_shell=use_shell, use_pty=use_pty,
                 **paramiko_kwargs)
                 for host in self.hosts]
-        for cmd in cmds:
-            try:
-                self.get_output(cmd, output, encoding=encoding)
-            except Exception:
-                if stop_on_errors:
-                    raise
-        return output
+        if return_outputs:
+            ret = self.get_last_output(cmds, stop_on_errors=stop_on_errors)
+        else:
+            ret = cmds
+        self.cmds = cmds
+        return ret
 
     def _run_command(self, host, command, sudo=False, user=None,
                      shell=None, use_shell=True, use_pty=True,
